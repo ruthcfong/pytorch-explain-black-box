@@ -59,7 +59,6 @@ class AlexNet(nn.Module):
         for key in out_keys:
             res[key] = out[key]
         return res
-        #return [out[key] for key in out_keys]
 
 
 def alexnet(pretrained, **kwargs):
@@ -72,6 +71,11 @@ def alexnet(pretrained, **kwargs):
             new_weights[keys[k]] = weights[key]
         model.load_state_dict(new_weights)
     return model
+
+
+def get_short_class_name(label_i, labels_desc = np.loadtxt('synset_words.txt', 
+    str, delimiter='\t')):
+    return ' '.join(labels_desc[label_i].split(',')[0].split()[1:])
 
 
 def min_norm(input_dict, target_dict):
@@ -162,82 +166,121 @@ def load_model():
 
 
 if __name__ == '__main__':
-	#Hyper parameters. 
-	#TBD: Use argparse
-	tv_beta = 3
-	learning_rate = 0.1
-	max_iterations = 500
-	l1_coeff = 0.01
-	tv_coeff = 0.2
-        less_coeff = 0.5#1e-3 
+        import argparse
+        import sys
+        import traceback
+        try:
+            parser = argparse.ArgumentParser(
+                    description='Learn perturbation mask')
 
-	model = load_model()
-	original_img = cv2.imread(sys.argv[1], 1)
-	original_img = cv2.resize(original_img, (224, 224))
-	img = np.float32(original_img) / 255
-	blurred_img1 = cv2.GaussianBlur(img, (11, 11), 5)
-	blurred_img2 = np.float32(cv2.medianBlur(original_img, 11))/255
-	blurred_img_numpy = (blurred_img1 + blurred_img2) / 2
-	mask_init = np.ones((28, 28), dtype = np.float32)
-	
-	# Convert to torch variables
-	img = preprocess_image(img)
-	blurred_img = preprocess_image(blurred_img2)
-	mask = numpy_to_torch(mask_init)
+            parser.add_argument('--image', default='examples/flute.jpg',
+                    help='path of input image')
+            parser.add_argument('--architecture', default='alexnet',
+                    help='name of CNN architecture (choose from PyTorch pretrained networks')
+            parser.add_argument('--input_size', type=int, default=224,
+                    help='CNN image input size')
+            parser.add_argument('--learning_rate', type=float, default=0.1,
+                    help='learning rate (for Adam optimization)')
+            parser.add_argument('--epochs', type=int, default=300,
+                    help='number of iterations to run optimization for')
+            parser.add_argument('--l1_lambda', type=float, default=0.01,
+                    help='L1 regularization lambda coefficient term')
+            parser.add_argument('--tv_lambda', type=float, default=0.2,
+                    help='TV regularization lambda coefficient term')
+            parser.add_argument('--tv_beta', type=float, default=3, 
+                    help='TV beta hyper-parameter')
+            parser.add_argument('--blur_size', type=int, default=11,
+                    help='Gaussian kernel blur size')
+            parser.add_argument('--blur_sigma', type=int, default=10,
+                    help='Gaussian blur sigma')
+            parser.add_argument('--mask_size', type=int, default=28,
+                    help='Learned mask size')
+            parser.add_argument('--noise', type=float, default=0,
+                    help='Amount of random Gaussian noise to add')
+            parser.add_argument('--less_lambda', type=float, default=0,
+                    help='Similarity to target regularization lambda coefficient term')
+            parser.add_argument('--layers', type=str, default=['fc3'],
+                    help='Layers with which to compute to')
 
-	if use_cuda:
-		upsample = torch.nn.UpsamplingBilinear2d(size=(224, 224)).cuda()
-	else:
-		upsample = torch.nn.UpsamplingBilinear2d(size=(224, 224))
-	optimizer = torch.optim.Adam([mask], lr=learning_rate)
+            args = parser.parse_args()
 
-        #out_keys = ['p1','p2','r3','r4','p5','fc1','fc2','fc3']
-        out_keys = ['p5']
+            # TODO: implement generalization for all pytorch architectures
+            # TODO: implement in a separate function
+            assert(args.architecture == 'alexnet')
+            model = load_model()
+            original_img = cv2.imread(args.image, 1)
+            original_img = cv2.resize(original_img, (args.input_size, args.input_size))
+            img = np.float32(original_img) / 255
+            blurred_img_numpy = cv2.GaussianBlur(img, (args.blur_size, args.blur_size), 
+                    args.blur_sigma)
+            #blurred_img1 = cv2.GaussianBlur(img, (11, 11), 5)
+            #blurred_img2 = np.float32(cv2.medianBlur(original_img, 11))/255
+            #blurred_img_numpy = (blurred_img1 + blurred_img2) / 2
+            mask_init = np.ones((args.mask_size, args.mask_size), dtype = np.float32)
+            
+            # Convert to torch variables
+            img = preprocess_image(img)
+            blurred_img = preprocess_image(blurred_img_numpy)
+            mask = numpy_to_torch(mask_init)
 
-        target_res = model(img, out_keys)
-	target = torch.nn.Softmax()(model(img))
-	category = np.argmax(target.cpu().data.numpy())
-	print "Category with highest probability", category
-	print "Optimizing.. "
+            # TODO: Check if using old or new pytorch and use nn.Upsampling for new pytorch versions
+            if use_cuda:
+                    upsample = torch.nn.UpsamplingBilinear2d(size=(args.input_size, args.input_size)).cuda()
+            else:
+                    upsample = torch.nn.UpsamplingBilinear2d(size=(args.input_size, args.input_size))
+            optimizer = torch.optim.Adam([mask], lr=args.learning_rate)
+
+            out_keys = args.layers
+
+            target_res = model(img, out_keys)
+            target = torch.nn.Softmax()(model(img))
+            category = np.argmax(target.cpu().data.numpy())
+            print "Category with highest probability: %s (%.4f)" % (get_short_class_name(category),
+                    target.cpu().data.numpy()[0][category])
+            print "Optimizing..."
 
 
-	for i in range(max_iterations):
-		upsampled_mask = upsample(mask)
-		# The single channel mask is used with an RGB image, 
-		# so the mask is duplicated to have 3 channel,
-		upsampled_mask = \
-			upsampled_mask.expand(1, 3, upsampled_mask.size(2), \
-										upsampled_mask.size(3))
-		
-		# Use the mask to perturbated the input image.
-		perturbated_input = img.mul(upsampled_mask) + \
-							blurred_img.mul(1-upsampled_mask)
-		
-		noise = np.zeros((224, 224, 3), dtype = np.float32)
-		noise = noise + cv2.randn(noise, 0, 0.2)
-		noise = numpy_to_torch(noise)
-		perturbated_input = perturbated_input + noise
-		
-                res = model(perturbated_input, out_keys)
-		outputs = torch.nn.Softmax()(model(perturbated_input))
-                l1_loss = l1_coeff*torch.mean(torch.abs(1-mask))
-                tv_loss = tv_coeff*tv_norm(mask, tv_beta)
-                less_loss = less_coeff*min_norm(res, target_res)
-                class_loss = outputs[0, category]
-		tot_loss = l1_loss + tv_loss + less_loss + class_loss
+            for i in range(args.epochs):
+                    upsampled_mask = upsample(mask)
+                    # The single channel mask is used with an RGB image, 
+                    # so the mask is duplicated to have 3 channel,
+                    upsampled_mask = \
+                            upsampled_mask.expand(1, 3, upsampled_mask.size(2), \
+                                                                                    upsampled_mask.size(3))
+                    
+                    # Use the mask to perturbated the input image.
+                    perturbated_input = img.mul(upsampled_mask) + \
+                                                            blurred_img.mul(1-upsampled_mask)
+                    
+                    noise = np.zeros((args.input_size, args.input_size, 3), dtype = np.float32)
+                    if args.noise != 0:
+                        noise = noise + cv2.randn(noise, 0, args.noise)
+                    noise = numpy_to_torch(noise)
+                    perturbated_input = perturbated_input + noise
+                    
+                    res = model(perturbated_input, out_keys)
+                    outputs = torch.nn.Softmax()(model(perturbated_input))
+                    l1_loss = args.l1_lambda*torch.mean(torch.abs(1-mask))
+                    tv_loss = args.tv_lambda*tv_norm(mask, args.tv_beta)
+                    less_loss = args.less_lambda*min_norm(res, target_res)
+                    class_loss = outputs[0, category]
+                    tot_loss = l1_loss + tv_loss + less_loss + class_loss
 
-		optimizer.zero_grad()
-		tot_loss.backward()
-		optimizer.step()
+                    optimizer.zero_grad()
+                    tot_loss.backward()
+                    optimizer.step()
 
-		# Optional: clamping seems to give better results
-		mask.data.clamp_(0, 1)
+                    # Optional: clamping seems to give better results
+                    mask.data.clamp_(0, 1)
 
-                if i % 25 == 0:
-                    print('Epoch %d\tL1 Loss %f\tTV Loss %f\tLess Loss %f\tClass Loss %f\tTot Loss %f\t' 
-                            % (i+1, l1_loss.data.cpu().numpy()[0], tv_loss.data.cpu().numpy()[0],
-                                less_loss.data.cpu().numpy()[0], class_loss.data.cpu().numpy()[0],
-                                tot_loss.data.cpu().numpy()[0]))
+                    if i % 25 == 0:
+                        print('Epoch %d\tL1 Loss %f\tTV Loss %f\tLess Loss %f\tClass Loss %f\tTot Loss %f\t' 
+                                % (i+1, l1_loss.data.cpu().numpy()[0], tv_loss.data.cpu().numpy()[0],
+                                    less_loss.data.cpu().numpy()[0], class_loss.data.cpu().numpy()[0],
+                                    tot_loss.data.cpu().numpy()[0]))
 
-	upsampled_mask = upsample(mask)
-	save(upsampled_mask, original_img, blurred_img_numpy)
+            upsampled_mask = upsample(mask)
+            save(upsampled_mask, original_img, blurred_img_numpy)
+        except:
+            traceback.print_exc(file=sys.stdout)
+            sys.exit(1)
