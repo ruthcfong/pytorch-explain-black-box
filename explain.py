@@ -86,11 +86,19 @@ def min_norm(input_dict, target_dict):
     return loss
 
 
-def tv_norm(input, tv_beta):
-	img = input[0, 0, :]
-	row_grad = torch.mean(torch.abs((img[:-1 , :] - img[1 :, :])).pow(tv_beta))
-	col_grad = torch.mean(torch.abs((img[: , :-1] - img[: , 1 :])).pow(tv_beta))
-	return row_grad + col_grad
+#def tv_norm(input, tv_beta):
+#    img = input[0, 0, :]
+#    row_grad = torch.mean(torch.abs((img[:-1 , :] - img[1 :, :])).pow(tv_beta))
+#    col_grad = torch.mean(torch.abs((img[: , :-1] - img[: , 1 :])).pow(tv_beta))
+#    return row_grad + col_grad
+
+
+def tv_norm(x, beta=2.):
+    assert(x.size(0) == 1)
+    img = x[0]
+    dy = -img[:,:-1,:] + img[:,1:,:]
+    dx = -img[:,:,:-1] + img[:,:,1:]
+    return ((dx.pow(2) + dy.pow(2)).pow(beta/2.)).sum()
 
 
 def preprocess_image(img):
@@ -185,7 +193,7 @@ if __name__ == '__main__':
                     help='number of iterations to run optimization for')
             parser.add_argument('--l1_lambda', type=float, default=0.01,
                     help='L1 regularization lambda coefficient term')
-            parser.add_argument('--tv_lambda', type=float, default=0.2,
+            parser.add_argument('--tv_lambda', type=float, default=1e-4,
                     help='TV regularization lambda coefficient term')
             parser.add_argument('--tv_beta', type=float, default=3, 
                     help='TV beta hyper-parameter')
