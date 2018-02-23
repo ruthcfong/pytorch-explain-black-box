@@ -61,15 +61,21 @@ class AlexNet(nn.Module):
         return res
 
 
-def alexnet(pretrained, **kwargs):
+def alexnet(pretrained, randomize_blob=None, **kwargs):
     model = AlexNet(**kwargs)
     if pretrained:
+        model_dict = model.state_dict()
         keys = model.state_dict().keys()
         new_weights = {}
         weights = model_zoo.load_url(model_urls['alexnet'])
-        for k, key in enumerate(weights.keys()):
+        if randomize_blob is not None:
+            rand_i = np.where([randomize_blob in k for k in weights.keys()])[0][-1]-1
+        else:
+            rand_i = len(weights.keys())
+        for k, key in enumerate(weights.keys()[:rand_i]):
             new_weights[keys[k]] = weights[key]
-        model.load_state_dict(new_weights)
+        model_dict.update(new_weights)
+        model.load_state_dict(model_dict)
     return model
 
 
@@ -97,7 +103,7 @@ def tv_norm(x, beta=2.):
     assert(x.size(0) == 1)
     img = x[0]
     dy = -img[:,:-1,:] + img[:,1:,:]
-    dx = -img[:,:,:-1] + img[:,:,1:]
+    dx = torch.transpose(-img[:,:,:-1] + img[:,:,1:], 1, 2)
     return ((dx.pow(2) + dy.pow(2)).pow(beta/2.)).sum()
 
 
@@ -156,9 +162,9 @@ def numpy_to_torch(img, requires_grad = True):
 	return v
 
 
-def load_model():
+def load_model(randomize_blob=None):
 	#model = models.vgg19(pretrained=True)
-        model = alexnet(pretrained=True)
+        model = alexnet(pretrained=True, randomize_blob=randomize_blob)
 	model.eval()
 	if use_cuda:
 		model.cuda()
@@ -185,8 +191,10 @@ if __name__ == '__main__':
                     help='path of input image')
             parser.add_argument('--architecture', default='alexnet',
                     help='name of CNN architecture (choose from PyTorch pretrained networks')
-            parser.add_argument('--input_size', type=int, default=224,
+            parser.add_argument('--input_size', type=int, default=227,
                     help='CNN image input size')
+            parser.add_argument('--randomize_blob', type=str, default=None,
+                    help='layer from which to randomize weights')
             parser.add_argument('--learning_rate', type=float, default=0.1,
                     help='learning rate (for Adam optimization)')
             parser.add_argument('--epochs', type=int, default=300,
@@ -215,7 +223,10 @@ if __name__ == '__main__':
             # TODO: implement generalization for all pytorch architectures
             # TODO: implement in a separate function
             assert(args.architecture == 'alexnet')
-            model = load_model()
+            if args.randomize_blob is not None:
+                model = load_model(randomize_blob=args.randomize_blob)
+            else:
+                model = load_model()
             original_img = cv2.imread(args.image, 1)
             original_img = cv2.resize(original_img, (args.input_size, args.input_size))
             img = np.float32(original_img) / 255
@@ -224,7 +235,8 @@ if __name__ == '__main__':
             #blurred_img1 = cv2.GaussianBlur(img, (11, 11), 5)
             #blurred_img2 = np.float32(cv2.medianBlur(original_img, 11))/255
             #blurred_img_numpy = (blurred_img1 + blurred_img2) / 2
-            mask_init = np.ones((args.mask_size, args.mask_size), dtype = np.float32)
+            #mask_init = np.ones((args.mask_size, args.mask_size), dtype = np.float32)
+            mask_init = 0.5*np.ones((args.mask_size, args.mask_size), dtype = np.float32)
             
             # Convert to torch variables
             img = preprocess_image(img)
@@ -233,9 +245,11 @@ if __name__ == '__main__':
 
             # TODO: Check if using old or new pytorch and use nn.Upsampling for new pytorch versions
             if use_cuda:
-                    upsample = torch.nn.UpsamplingBilinear2d(size=(args.input_size, args.input_size)).cuda()
+                    #upsample = torch.nn.UpsamplingBilinear2d(size=(args.input_size, args.input_size)).cuda()
+                    upsample = torch.nn.Upsample(size=(args.input_size, args.input_size), mode='bilinear').cuda()
             else:
-                    upsample = torch.nn.UpsamplingBilinear2d(size=(args.input_size, args.input_size))
+                    #upsample = torch.nn.UpsamplingBilinear2d(size=(args.input_size, args.input_size))
+                    upsample = torch.nn.Upsample(size=(args.input_size, args.input_size), mode='bilinear')
             optimizer = torch.optim.Adam([mask], lr=args.learning_rate)
 
             out_keys = args.layers
@@ -247,7 +261,9 @@ if __name__ == '__main__':
                     target.cpu().data.numpy()[0][category])
             print "Optimizing..."
 
-
+            #if args.randomize_blob is not None:
+            #    model = load_model(randomize_blob=args.randomize_blob)
+            
             for i in range(args.epochs):
                     upsampled_mask = upsample(mask)
                     # The single channel mask is used with an RGB image, 
@@ -267,7 +283,7 @@ if __name__ == '__main__':
                     perturbated_input = perturbated_input + noise
                     
                     res = model(perturbated_input, out_keys)
-                    outputs = torch.nn.Softmax()(model(perturbated_input))
+                    outputs = torch.nn.Softmax(dim=1)(model(perturbated_input))
                     l1_loss = args.l1_lambda*torch.mean(torch.abs(1-mask))
                     tv_loss = args.tv_lambda*tv_norm(mask, args.tv_beta)
                     less_loss = args.less_lambda*min_norm(res, target_res)
@@ -283,7 +299,7 @@ if __name__ == '__main__':
 
                     if i % 25 == 0:
                         print('Epoch %d\tL1 Loss %f\tTV Loss %f\tLess Loss %f\tClass Loss %f\tTot Loss %f\t' 
-                                % (i+1, l1_loss.data.cpu().numpy()[0], tv_loss.data.cpu().numpy()[0],
+                                % (i, l1_loss.data.cpu().numpy()[0], tv_loss.data.cpu().numpy()[0],
                                     less_loss.data.cpu().numpy()[0], class_loss.data.cpu().numpy()[0],
                                     tot_loss.data.cpu().numpy()[0]))
 
