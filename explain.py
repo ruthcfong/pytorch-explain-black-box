@@ -179,7 +179,7 @@ def load_model(randomize_blob=None):
 	return model
 
 def perturb_explanation(image='examples/flute.jpg', arch='alexnet', 
-        input_size=227, learning_rate=1e-1, epochs=300,
+        input_size=227, learning_rate=1e-1, epochs=300, neuron_selection='max', 
         l1_lambda=1e-2, tv_lambda=1e-4, tv_beta=3, blur_size=11, blur_sigma=10, 
         mask_size=28, noise_std=0, less_lambda=0, layers=['fc3'], randomize_blob=None):
     assert(arch == 'alexnet')
@@ -213,9 +213,14 @@ def perturb_explanation(image='examples/flute.jpg', arch='alexnet',
 
     target_res = model(img, out_keys)
     target = torch.nn.Softmax()(model(img))
-    category = np.argmax(target.cpu().data.numpy())
-    print "Category with highest probability: %s (%.4f)" % (get_short_class_name(category),
-            target.cpu().data.numpy()[0][category])
+    if neuron_selection == 'max':
+        category = np.argmax(target.cpu().data.numpy())
+        print "Category with highest probability: %s (%.4f)" % (get_short_class_name(category),
+                target.cpu().data.numpy()[0][category])
+    elif neuron_selection == 'random':
+        category = np.random.randint(0, len(np.squeeze(target.cpu().data.numpy())))
+        print "Random category with probability: %s (%.4f)" % (get_short_class_name(category),
+                target.cpu().data.numpy()[0][category])
     print "Optimizing..."
 
     for i in range(epochs):
